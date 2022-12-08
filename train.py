@@ -13,19 +13,16 @@ from datasets import load_dataset
 from datasets import Dataset as HDataset
 
 class NewsDataset(Dataset):
-    def __init__(self, file_path: str="readerbench/AlephNews", split: str="train"):
+    def __init__(self, file_path: str):
         self.file_path = file_path
         self.instances = []
 
-        dataset = load_dataset(file_path)
-        df_pandas = pd.DataFrame(dataset[split])
-        df_pandas.dropna(inplace=True)
-        dataset = HDataset.from_pandas(df_pandas)
-        for line in dataset:
-            paragraph = line["paragraphs"][0]
-            summary = line["summary"][0]
+        dataset = pd.read_csv(file_path)
+        dataset.dropna(inplace=True)
+        for line, label in tqdm(zip(dataset["Body"].values[:], dataset["NewsType"].values[:]), total=len(dataset["NewsType"].values[:])):
             instance = {
-                        "sentence": paragraph+"\nREZUMAT: "+summary+"</s>",
+                        "sentence": line,
+                        "label":"\nLABEL:"+label
                        }
             self.instances.append(instance)
 
@@ -72,11 +69,17 @@ class T5Summarization(pl.LightningModule):
 
     def my_collate(self, batch):
         sentences = []
+        summaries = []
         for instance in batch:
             sentences.append(instance["sentence"])
+            summaries.append(instance["label"])
+        sentences_batch = self.tokenizer(sentences, padding="max_length", max_length=512, truncation=True, return_tensors="pt")
+        summaries_batch = self.tokenizer(summaries, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
 
-        sentences_batch = self.tokenizer(sentences, padding="max_length", max_length=472, truncation=True, return_tensors="pt")
-        return sentences_batch
+        sentences_batch["input_ids"][sentences_batch["input_ids"][:, :] == self.tokenizer.pad_token_id] = -100
+        summaries_batch["input_ids"][summaries_batch["input_ids"][:, :] == self.tokenizer.pad_token_id] = -100
+
+        return sentences_batch, summaries_batch
 
     def forward(self, sentence):
         outputs = self.model(input_ids=sentence["input_ids"], attention_mask=sentence["attention_mask"],
@@ -115,9 +118,9 @@ def cli_main():
     pl.seed_everything(1234)
 
     # data
-    train_dataset = NewsDataset(split="train")
-    test_dataset = NewsDataset(split="test")
-    valid_dataset = NewsDataset(split="validation")
+    train_dataset = NewsDataset("train.csv")
+    test_dataset = NewsDataset("test.csv")
+    valid_dataset = NewsDataset("validation.csv")
 
     model = T5Summarization()
     trainer = pl.Trainer(max_epochs=model.max_train_steps)
